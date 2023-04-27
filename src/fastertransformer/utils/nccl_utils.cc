@@ -14,7 +14,9 @@
  * limitations under the License.
  */
 #include <assert.h>
+#include <nccl.h>
 #include <unistd.h>
+#include "src/fastertransformer/utils/cuda_utils.h"
 #include "src/fastertransformer/utils/nccl_utils.h"
 
 namespace fastertransformer {
@@ -312,9 +314,7 @@ void ftGetUniqueNcclId(ncclUniqueId& uid, bool is_root, std::string qualifier) {
         ncclGetUniqueId(&uid);
         FILE* file = fopen(path.c_str(), "wb");
         size_t bytes_written = fwrite(uid.internal, sizeof(char), NCCL_UNIQUE_ID_BYTES, file);
-        if (bytes_written != NCCL_UNIQUE_ID_BYTES) {
-            throw std::runtime_error("bytes write error");
-        }
+        FT_CHECK(bytes_written == NCCL_UNIQUE_ID_BYTES);
         fclose(file);
     }
 
@@ -323,9 +323,7 @@ void ftGetUniqueNcclId(ncclUniqueId& uid, bool is_root, std::string qualifier) {
     }
     FILE* file = fopen(path.c_str(), "rb");
     size_t bytes_read = fread(uid.internal, sizeof(char), NCCL_UNIQUE_ID_BYTES, file);
-    if (bytes_read != NCCL_UNIQUE_ID_BYTES) {
-        throw std::runtime_error("bytes read error");
-    }
+    FT_CHECK(bytes_read == NCCL_UNIQUE_ID_BYTES);
     fclose(file);
 }
 
@@ -373,14 +371,14 @@ void ftNcclInitialize(NcclParam& tensor_para,
     }
 
     // reading from env variables set by torchrun rather than using MPI
-    const int rank = atoi(std::getenv("RANK"));  // global rank
-    const int world_size = atoi(std::getenv("WORLD_SIZE"));
-    const int tp_rank = atoi(std::getenv("LOCAL_RANK"));  // rank within TP-group
+    const int rank = atoi(std::getenv("FT_GLOBAL_RANK"));  // global rank
+    const int tp_rank = atoi(std::getenv("FT_LOCAL_RANK"));  // rank within TP-group
     const int pp_rank = 0;  // assuming no PP
+    const int world_size = atoi(std::getenv("FT_LOCAL_WORLD_SIZE"));
     ncclUniqueId tp_uid;
-    ftGetUniqueNcclId(tp_uid, rank == 0, "tp");
+    ftGetUniqueNcclId(tp_uid, tp_rank == 0, "tp");
     ncclUniqueId pp_uid;
-    ftGetUniqueNcclId(pp_uid, rank == 0, "pp");
+    ftGetUniqueNcclId(pp_uid, tp_rank == 0, "pp");
     FT_LOG_INFO(
         "Initializing NCCL with rank=%d, world_size=%d, tp_rank=%d, pp_rank=%d, tp_size=%d, pp_size=%d",
         rank,
@@ -394,6 +392,7 @@ void ftNcclInitialize(NcclParam& tensor_para,
     FT_LOG_DEBUG("Initialize NCCL communicators.");
     ncclComm_t tp_nccl_comm, pp_nccl_comm;
     NCCLCHECK(ncclCommInitRank(&tp_nccl_comm, tensor_para_size, tp_uid, tp_rank));
+    FT_CHECK(pipeline_para_size == 1);
     // NCCLCHECK(ncclCommInitRank(&pp_nccl_comm, pipeline_para_size, pp_uid, pp_rank));
 
     tensor_para.world_size_   = tensor_para_size;
