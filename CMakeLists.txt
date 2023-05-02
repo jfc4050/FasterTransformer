@@ -238,7 +238,7 @@ if(BUILD_TF2)
   add_definitions(-D_GLIBCXX_USE_CXX11_ABI=1)
 endif()
 
-set(PYTHON_PATH "python" CACHE STRING "Python path")
+set(PYTHON_PATH "python3")
 if(BUILD_PYT)
   execute_process(COMMAND ${PYTHON_PATH} "-c" "from __future__ import print_function; import torch; print(torch.__version__,end='');"
                   RESULT_VARIABLE _PYTHON_SUCCESS

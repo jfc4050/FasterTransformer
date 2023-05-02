@@ -23,6 +23,8 @@
 #include <cublasLt.h>
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
+#include <execinfo.h>
+#include <unistd.h>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -30,6 +32,15 @@
 #ifdef SPARSITY_ENABLED
 #include <cusparseLt.h>
 #endif
+
+inline void printStackTrace() {
+    constexpr int requestedFrameCount = 20;
+    void* frames[requestedFrameCount];
+    auto actualFrameCount = backtrace(frames, requestedFrameCount);
+    std::cout << "Stack trace (" << actualFrameCount << " of " << requestedFrameCount << " requested frames):" << std::endl;
+    backtrace_symbols_fd(frames, actualFrameCount, STDOUT_FILENO);
+    std::cout << "End of stack trace." << std::endl;
+}
 
 namespace fastertransformer {
 
@@ -116,6 +127,7 @@ template<typename T>
 void check(T result, char const* const func, const char* const file, int const line)
 {
     if (result) {
+        printStackTrace();
         throw std::runtime_error(std::string("[FT][ERROR] CUDA runtime error: ") + (_cudaGetErrorEnum(result)) + " "
                                  + file + ":" + std::to_string(line) + " \n");
     }
