@@ -311,7 +311,7 @@ void ftNcclParamDestroy(NcclParam& param)
 void ftGetUniqueNcclId(ncclUniqueId& uid, bool is_root, std::string qualifier) {
     std::string path = "/tmp/nccl_uid_" + qualifier;
     if (is_root) {
-        ncclGetUniqueId(&uid);
+        NCCLCHECK(ncclGetUniqueId(&uid));
         FILE* file = fopen(path.c_str(), "wb");
         size_t bytes_written = fwrite(uid.internal, sizeof(char), NCCL_UNIQUE_ID_BYTES, file);
         FT_CHECK(bytes_written == NCCL_UNIQUE_ID_BYTES);
