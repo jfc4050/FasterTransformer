@@ -16,9 +16,11 @@
  */
 
 #include "src/fastertransformer/models/multi_gpu_gpt/ParallelGpt.h"
+#include "src/fastertransformer/models/multi_gpu_gpt/ParallelGptWeight.h"
 #include "src/fastertransformer/th_op/th_utils.h"
 #include "src/fastertransformer/utils/cuda_bf16_wrapper.h"
 #include "src/fastertransformer/utils/nccl_utils.h"
+#include <vector>
 
 namespace ft = fastertransformer;
 namespace th = torch;
@@ -47,6 +49,9 @@ public:
                          th::optional<th::Tensor> random_seed_opt,
                          th::optional<th::Tensor> bad_words_list_opt,
                          th::optional<int64_t>    return_cum_log_probs_opt) = 0;
+
+    virtual void load_weights(std::vector<th::Tensor> weights) = 0;
+    virtual void unload_weights() = 0;
 };
 
 template<typename T>
@@ -66,9 +71,6 @@ public:
           const int64_t              tensor_para_size,
           const int64_t              pipeline_para_size,
           const int64_t              int8_mode,
-          const vector<th::Tensor>   weights,
-          const vector<th::Tensor>   int8_weights,
-          const vector<th::Tensor>   scale,
           const double               shared_contexts_ratio):
         head_num_(head_num),
         size_per_head_(size_per_head),
@@ -84,9 +86,6 @@ public:
         tensor_para_size_(tensor_para_size),
         pipeline_para_size_(pipeline_para_size),
         int8_mode_(int8_mode),
-        weights_(weights),
-        int8_weights_(int8_weights),
-        scale_(scale),
         shared_contexts_ratio_(shared_contexts_ratio)
     {
         ft::check_cuda_error(cublasLtCreate(&cublasltHandle_));
@@ -94,6 +93,27 @@ public:
         cublas_wrapper_mutex_ = new std::mutex();
 
         ftNcclInitialize(tensor_para_, pipeline_para_, tensor_para_size, pipeline_para_size);
+
+        int device_id = 0;
+        ft::check_cuda_error(cudaGetDevice(&device_id));
+        ft::check_cuda_error(cudaGetDeviceProperties(&prop_, device_id));
+        FT_LOG_INFO("Device %s", prop_.name);
+    }
+
+    ~FTGpt() override
+    {
+        ft::ftNcclParamDestroy(tensor_para_);
+        ft::ftNcclParamDestroy(pipeline_para_);
+        cublasLtDestroy(cublasltHandle_);
+        delete cublas_algo_map_;
+        delete cublas_wrapper_mutex_;
+    }
+
+    void load_weights(std::vector<th::Tensor> weights) {
+        // not messing with int8 weights or scale
+        assert(int8_mode_ == 0);
+
+        weights_ = weights;
 
         gpt_weights_.resizeLayer(layer_num_);
         for (int i = 0; i < (int)layer_num_; i++) {
@@ -132,7 +152,7 @@ public:
                 gpt_weights_.decoder_layer_weights[i]->ffn_weights.output_weight.int8_kernel =
                     get_ptr<int8_t>(int8_weights_[i + 3 * layer_num_]);
 
-                if (int8_mode == 1) {
+                if (int8_mode_ == 1) {
                     gpt_weights_.decoder_layer_weights[i]->self_attention_weights.query_weight.weight_only_quant_scale =
                         get_ptr<T>(scale_[i + 0 * layer_num_]);
                     gpt_weights_.decoder_layer_weights[i]
@@ -184,7 +204,7 @@ public:
         weight_offset = 7 - weight_offset;
 
         for (int i = 0; i < (int)layer_num_; i++) {
-            if (std::find(moe_layer_index.begin(), moe_layer_index.end(), i) != moe_layer_index.end()) {
+            if (std::find(moe_layer_index_.begin(), moe_layer_index_.end(), i) != moe_layer_index_.end()) {
                 gpt_weights_.decoder_layer_weights[i]->ffn_weights.gating_weight.kernel =
                     get_ptr<T>(weights_[12 * layer_num_ + weight_offset + i]);
             }
@@ -222,7 +242,7 @@ public:
                     gpt_weights_.decoder_layer_weights[i]->after_ffn_adapter_weights.output_weight.int8_kernel =
                         get_ptr<int8_t>(int8_weights_[i + 7 * layer_num_]);
 
-                    if (int8_mode == 1) {
+                    if (int8_mode_ == 1) {
                         gpt_weights_.decoder_layer_weights[i]
                             ->after_attention_adapter_weights.intermediate_weight.weight_only_quant_scale =
                             get_ptr<T>(scale_[i + 4 * layer_num_]);
@@ -250,20 +270,11 @@ public:
                 }
             }
         }
-
-        int device_id = 0;
-        ft::check_cuda_error(cudaGetDevice(&device_id));
-        ft::check_cuda_error(cudaGetDeviceProperties(&prop_, device_id));
-        FT_LOG_INFO("Device %s", prop_.name);
     }
 
-    ~FTGpt() override
-    {
-        ft::ftNcclParamDestroy(tensor_para_);
-        ft::ftNcclParamDestroy(pipeline_para_);
-        cublasLtDestroy(cublasltHandle_);
-        delete cublas_algo_map_;
-        delete cublas_wrapper_mutex_;
+    void unload_weights() {
+        weights_.clear();
+        gpt_weights_ = ft::ParallelGptWeight<T>{};
     }
 
     void forward(th::Tensor&              input_ids,
@@ -510,6 +521,7 @@ public:
                   const int64_t              tensor_para_size,
                   const int64_t              pipeline_para_size,
                   const int64_t              int8_mode,
+                  const std::string          dtype,
                   const double               layernorm_eps,
                   const std::string          layernorm_type,
                   const std::string          activation_type,
@@ -519,9 +531,6 @@ public:
                   const bool                 has_adapters,
                   const int64_t              adapter_inter_size,
                   const bool                 use_attention_linear_bias,
-                  const vector<th::Tensor>   weights,
-                  const vector<th::Tensor>   int8_weights,
-                  const vector<th::Tensor>   scale,
                   const double               shared_contexts_ratio);
 
     ~ParallelGptOp();
@@ -542,8 +551,12 @@ public:
                                th::optional<th::Tensor> bad_words_list_opt,
                                th::optional<int64_t>    return_cum_log_probs_opt);
 
+    void load_weights(std::vector<th::Tensor> weights);
+
+    void unload_weights();
+
 private:
-    const at::ScalarType    st_;
+    at::ScalarType          st_;
     IFGpt*                  ftgpt;
     std::vector<th::Tensor> weights;
 };

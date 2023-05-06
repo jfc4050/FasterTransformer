@@ -16,6 +16,7 @@
 
 #include "src/fastertransformer/th_op/multi_gpu_gpt/ParallelGptOp.h"
 #include "src/fastertransformer/th_op/multi_gpu_gpt/WeightTransposeCalibrateQuantizeOp.h"
+#include <stdexcept>
 
 namespace th = torch;
 namespace ft = fastertransformer;
@@ -34,6 +35,7 @@ ParallelGptOp::ParallelGptOp(const int64_t                 head_num,
                              const int64_t                 tensor_para_size,
                              const int64_t                 pipeline_para_size,
                              const int64_t                 int8_mode,
+                             const std::string             dtype,
                              const double                  layernorm_eps,
                              const std::string             layernorm_type,
                              const std::string             activation_type,
@@ -43,14 +45,16 @@ ParallelGptOp::ParallelGptOp(const int64_t                 head_num,
                              const bool                    has_adapters,
                              const int64_t                 adapter_inter_size,
                              const bool                    use_attention_linear_bias,
-                             const std::vector<th::Tensor> weights,
-                             const std::vector<th::Tensor> int8_weights,
-                             const std::vector<th::Tensor> scale,
-                             const double                  shared_contexts_ratio):
-    st_(weights[0].scalar_type())
+                             const double                  shared_contexts_ratio)
 {
-    for (auto t : weights) {
-        CHECK_INPUT(t, st_);
+    if (dtype == "fp16") {
+        st_ = at::ScalarType::Half;
+    } else if (dtype == "bf16") {
+        st_ = at::ScalarType::BFloat16;
+    } else if (dtype == "fp32") {
+        st_ = at::ScalarType::Float;
+    } else {
+        throw std::runtime_error("unrecognized dtype");
     }
 
     ft::gptVariantParams gpt_variant_params{(float)layernorm_eps,
@@ -79,9 +83,6 @@ ParallelGptOp::ParallelGptOp(const int64_t                 head_num,
                                      tensor_para_size,
                                      pipeline_para_size,
                                      int8_mode,
-                                     weights,
-                                     int8_weights,
-                                     scale,
                                      shared_contexts_ratio);
             break;
         case at::ScalarType::Half:
@@ -99,9 +100,6 @@ ParallelGptOp::ParallelGptOp(const int64_t                 head_num,
                                     tensor_para_size,
                                     pipeline_para_size,
                                     int8_mode,
-                                    weights,
-                                    int8_weights,
-                                    scale,
                                     shared_contexts_ratio);
             break;
 #ifdef ENABLE_BF16
@@ -120,9 +118,6 @@ ParallelGptOp::ParallelGptOp(const int64_t                 head_num,
                                              tensor_para_size,
                                              pipeline_para_size,
                                              int8_mode,
-                                             weights,
-                                             int8_weights,
-                                             scale,
                                              shared_contexts_ratio);
             break;
 #endif
@@ -134,6 +129,19 @@ ParallelGptOp::ParallelGptOp(const int64_t                 head_num,
 ParallelGptOp::~ParallelGptOp()
 {
     delete ftgpt;
+}
+
+void ParallelGptOp::load_weights(std::vector<th::Tensor> weights)
+{
+    for (auto t : weights) {
+        CHECK_INPUT(t, st_);
+    }
+    ftgpt->load_weights(weights);
+}
+
+void ParallelGptOp::unload_weights()
+{
+    ftgpt->unload_weights();
 }
 
 std::vector<th::Tensor> ParallelGptOp::forward(th::Tensor               input_ids,
@@ -224,6 +232,7 @@ static auto fasterTransformerGptTHS =
                               int64_t,
                               int64_t,
                               int64_t,
+                              std::string,
                               double,
                               std::string,
                               std::string,
@@ -233,8 +242,7 @@ static auto fasterTransformerGptTHS =
                               bool,
                               int64_t,
                               bool,
-                              std::vector<th::Tensor>,
-                              std::vector<th::Tensor>,
-                              std::vector<th::Tensor>,
                               double>())
-        .def("forward", &torch_ext::ParallelGptOp::forward);
+        .def("forward", &torch_ext::ParallelGptOp::forward)
+        .def("load_weights", &torch_ext::ParallelGptOp::load_weights)
+        .def("unload_weights", &torch_ext::ParallelGptOp::unload_weights);
