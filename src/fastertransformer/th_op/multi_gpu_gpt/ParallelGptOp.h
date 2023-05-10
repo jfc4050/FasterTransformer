@@ -110,10 +110,16 @@ public:
     }
 
     void load_weights(std::vector<th::Tensor> weights) {
-        // not messing with int8 weights or scale
-        assert(int8_mode_ == 0);
+        ft::FT_CHECK(weights_.empty());
+        ft::FT_CHECK(int8_weights_.empty());
+        ft::FT_CHECK(scale_.empty());
+
+        // not supporting these features for now
+        ft::FT_CHECK(int8_mode_ == 0);
+        ft::FT_CHECK(!gpt_variant_params_.has_adapters);
 
         weights_ = weights;
+        gpt_weights_ = ft::ParallelGptWeight<T>();
 
         gpt_weights_.resizeLayer(layer_num_);
         for (int i = 0; i < (int)layer_num_; i++) {
