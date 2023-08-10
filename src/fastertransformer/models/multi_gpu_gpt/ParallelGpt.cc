@@ -1592,13 +1592,23 @@ template<typename T>
 void ParallelGpt<T>::sendTensorsToFirstPipelineNode(std::unordered_map<std::string, Tensor>*       output_tensors,
                                                     const std::unordered_map<std::string, Tensor>* input_tensors)
 {
+    const auto pp_rank = pipeline_para_.rank_;
+    const auto tp_rank = tensor_para_.rank_;
+
+    std::vector<std::string> keys{};
+    std::stringstream ss{};
+    for (auto const& it : *output_tensors) {
+        ss << it.first + ": " + std::to_string(it.second.data != nullptr);
+        ss << " ";
+    }
+    FT_LOG_INFO(
+        "tensors at rank (" + std::to_string(tp_rank) + ", " + std::to_string(pp_rank) + "): " + ss.str());
+
     if (pipeline_para_.world_size_ == 1) {
         // throw errors when detected
         ftNcclStreamSynchronize(tensor_para_, pipeline_para_, stream_);
         return;
     }
-
-    const auto pp_rank = pipeline_para_.rank_;
 
     ftNcclGroupStart();
     for (auto const& it : *output_tensors) {
