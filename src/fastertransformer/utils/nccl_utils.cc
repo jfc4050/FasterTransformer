@@ -420,9 +420,6 @@ void ftNcclInitialize(NcclParam& tensor_para,
     FT_LOG_INFO("NCCL initialized tensor_para=%s pipeline_para=%s",
                 tensor_para.toString().c_str(),
                 pipeline_para.toString().c_str());
-
-    remove("/tmp/nccl_uid_tp");
-    remove("/tmp/nccl_uid_pp");
 #endif
     FT_LOG_DEBUG("%s stop", __PRETTY_FUNCTION__);
 }
